@@ -1,0 +1,420 @@
+#include <EEPROM.h>
+#include <LiquidCrystal.h>
+
+//Pins:
+const int leftButtonPin{2};
+const int rightButtonPin{3};
+const int rotateButtonPin{4};
+const int rapidFallButtonPin{5};
+
+//Figures:
+const int figures[7][4]{
+  {0, 2, 4, 6},
+  {2, 4, 5, 7},
+  {3, 5, 4, 6},
+  {3, 5, 4, 7},
+  {2, 3, 5, 7},
+  {3, 5, 7, 6},
+  {2, 3, 4, 5}
+};
+
+//Block:
+struct Block {
+  int x;
+  int y;
+  bool live{true};
+};
+
+//Tetromino:
+int findTetrominoBlock(int x, int y);
+void addTetrominoToBoard(int state);
+void createTetromino();
+void rotateTetromino();
+void moveTetromino(int direction);
+void moveTetrominoDown();
+void rapidTetrominoFall();
+
+//Display:
+bool updateCharacter(int column, int row);
+void updateBlock(int column, int row);
+void updateDisplay();
+
+//Board:
+void moveLines(int startY, int maxY);
+void clearLines();
+
+//Game:
+void updateScore();
+void prepareScore();
+void startGame();
+void gameOver();
+
+//Game data:
+bool game;
+bool intro;
+int score;
+
+unsigned long actualTime;
+unsigned long lastActionTime;
+unsigned long lastMoveTime;
+unsigned long lastActionDelta;
+unsigned long lastMoveDelta;
+
+LiquidCrystal display(8, 9, 10, 11, 12, 13);
+byte characters[2][4][8]{};
+int board[16][25];
+
+bool tetromino;
+int tetrominoFigure;
+Block tetrominoShape[4];
+
+//Tetromino:
+int findTetrominoBlock(int x, int y) {
+  for (int i{0}; i < 4; ++i) {
+    if (tetrominoShape[i].live && tetrominoShape[i].x == x && tetrominoShape[i].y == y) return i;
+  }
+  return -1;
+}
+
+void addTetrominoToBoard(int state) {
+  for (int i{0}; i < 4; ++i) {
+    if (tetrominoShape[i].live) {
+      board[tetrominoShape[i].x][tetrominoShape[i].y] = state;
+    }
+  }
+}
+
+void createTetromino() {
+  const int startPositionX{7};
+  const int startPositionY{19};
+
+  if (board[startPositionX][startPositionY] == 1) {
+    game = false;
+    return;
+  }
+
+  tetrominoFigure = random(7);
+
+  for (int i{0}; i < 4; ++i) {
+    tetrominoShape[i].x = startPositionX + figures[tetrominoFigure][i] % 2;
+    tetrominoShape[i].y = startPositionY - figures[tetrominoFigure][i] / 2;
+    tetrominoShape[i].live = true;
+
+    if (board[tetrominoShape[i].x][tetrominoShape[i].y] == 1) {
+      game = false;
+      return;
+    }
+  }
+
+  tetromino = true;
+}
+
+void rotateTetromino() {
+  if (tetrominoFigure == 6) return;
+
+  const Block rotateCenter = tetrominoShape[1];
+  Block rotated[4];
+
+  for (int i{0}; i < 4; ++i) {
+    const int x{tetrominoShape[i].y - rotateCenter.y};
+    const int y{tetrominoShape[i].x - rotateCenter.x};
+    rotated[i].x = rotateCenter.x - x;
+    rotated[i].y = rotateCenter.y + y;
+  }
+
+  for (int i{0}; i < 4; ++i) {
+    if ((rotated[i].x < 0 || rotated[i].x > 15) ||
+      (rotated[i].y < 0 || rotated[i].y > 19) ||
+      (board[rotated[i].x][rotated[i].y] == 1)) {
+      return;
+    }
+  }
+
+  for (int i{0}; i < 4; ++i) {
+    tetrominoShape[i].x = rotated[i].x;
+    tetrominoShape[i].y = rotated[i].y;
+  }
+}
+
+void moveTetromino(int direction) {
+  for (int i{0}; i < 4; ++i) {
+    if (direction == -1 && tetrominoShape[i].x == 0) return;
+    else if (direction == 1 && tetrominoShape[i].x == 15) return;
+
+    if (board[tetrominoShape[i].x + direction][tetrominoShape[i].y] == 1) return;
+  }
+
+  for (int i{0}; i < 4; ++i) tetrominoShape[i].x += direction;
+}
+
+void moveTetrominoDown() {
+  bool move{true};
+
+  for (int i{0}; i < 4; ++i) {
+    if (tetrominoShape[i].y == 0 || board[tetrominoShape[i].x][tetrominoShape[i].y - 1] == 1) {
+      move = false;
+      break;
+    }
+  }
+
+  if (move == true) {
+    for (int i{0}; i < 4; ++i) --tetrominoShape[i].y;
+  }
+  else {
+    addTetrominoToBoard(0);
+    clearLines();
+    tetromino = false;
+    ++score;
+  }
+}
+
+void rapidTetrominoFall() {
+  while (tetromino) {
+    moveTetrominoDown();
+    updateDisplay();
+  };
+}
+
+//Display:
+bool updateCharacter(int column, int row) {
+  int x{column * 8};
+  int y{row * 5};
+
+  byte character[8];
+  const int values[5]{16, 8, 4, 2, 1};
+
+  for (int i{0}; i < 8; ++i) {
+    int sum{};
+
+    for (int j{0}; j < 5; ++j) {
+      sum += board[x + i][y + j] * values[j];
+    }
+
+    character[i] = sum;
+  }
+
+  bool changed{};
+
+  for (int i{0}; i < 8; ++i) {
+    if (characters[column][row][i] != character[i]) {
+      characters[column][row][i] = character[i];
+      changed = true;
+      break;
+    }
+  }
+
+  return changed;
+}
+
+void updateBlock(int column, int row) {
+  if (updateCharacter(column, row)) {
+    display.createChar(column * 4 + row, characters[column][row]);
+    display.setCursor(row, column);
+  }
+}
+
+void updateDisplay() {
+  addTetrominoToBoard(1);
+
+  for (int row{0}; row < 4; ++row) {
+    updateBlock(0, row);
+    updateBlock(1, row);
+  }
+  if (!intro) updateScore();
+
+  if (tetromino) addTetrominoToBoard(0);
+}
+
+//Board:
+void moveLines(int startY) {
+  for (int x{0}; x < 16; ++x) {
+    for (int y{startY}; y < 25; ++y) {
+      const int index{findTetrominoBlock(x, y)};
+
+      if (index != -1) tetrominoShape[index].y -= 1;
+      else if (board[x][y] == 1) {
+        board[x][y - 1] = 1;
+        board[x][y] = 0;
+      }
+    }
+  }
+}
+
+void clearLines() {
+  int y{0};
+  int quantity{};
+  do {
+    quantity = 0;
+
+    for (int x{0}; x < 16; ++x) {
+      if (board[x][y] == 1 || findTetrominoBlock(x, y) != -1) ++quantity;
+    }
+
+    if (quantity == 16) {
+      for (int x{0}; x < 16; ++x) {
+        board[x][y] = 0;
+      }
+
+      for (int i{0}; i < 4; ++i) {
+        if (tetrominoShape[i].y == y) tetrominoShape[i].live = false;
+      }
+
+      score += 10;
+      moveLines(y + 1);
+    }
+    else ++y;
+  }
+  while (quantity > 0);
+}
+
+//Game:
+void updateScore() {
+  if (score > 999) score = 999;
+
+  display.setCursor(9, 1);
+  display.print(score);
+}
+
+void prepareScore() {
+  for (int column{0}; column < 2; ++column) {
+    display.setCursor(5, column);
+    for (int j{0}; j < 11; ++j) display.write(' ');
+  }
+
+  display.setCursor(5, 0);
+  display.write("XXX Score:");
+  display.setCursor(5, 1);
+  display.write("XXX");
+}
+
+void startGame() {
+  score = 0;
+  game = true;
+  intro = true;
+  tetromino = false;
+
+  actualTime = 0;
+  lastActionTime = 0;
+  lastMoveTime = 0;
+  lastActionDelta = 0;
+  lastMoveDelta = 0;
+
+  for (int x{0}; x < 16; ++x) {
+    for (int y{0}; y < 20; ++y) {
+      board[x][y] = 0;
+    }
+  }
+
+  display.begin(16, 2);
+  for (int i{0}; i < 8; ++i) display.createChar(i, characters[i / 4][i % 4]);
+
+  display.setCursor(0, 0);
+  for (int i{0}; i < 4; ++i) display.write(byte(i));
+  display.write("| Author:");
+
+  display.setCursor(0, 1);
+  for (int i{0}; i < 4; ++i) display.write(byte(i + 4));
+  display.write("| Artem Kachan");
+}
+
+void gameOver() {
+  display.clear();
+
+  const int highscore{EEPROM.read(0)};
+  byte crown[] = {
+    B00000,
+    B00000,
+    B00000,
+    B10101,
+    B11111,
+    B11111,
+    B11111,
+    B00000
+  };
+  display.createChar(0, crown);
+
+  display.setCursor(0, 0);
+  display.write("Your score: ");
+  display.print(score);
+
+  if (score >= highscore) {
+    display.write(byte(0));
+    EEPROM.update(0, score);
+  }
+
+  display.setCursor(0, 1);
+  display.write("High score: ");
+  display.print(highscore);
+
+  if (score <= highscore) {
+    display.write(byte(0));
+  }
+
+  delay(3000);
+
+  display.setCursor(0, 0);
+  display.write("Game over! Click");
+  display.setCursor(0, 1);
+  display.write("rotate to play.");
+
+  while (digitalRead(rotateButtonPin) == HIGH) {};
+
+  startGame();
+}
+
+//Setup + game loop
+void setup() {
+  if (!EEPROM.read(0)) {
+    EEPROM.write(0, 0);
+  }
+
+  pinMode(leftButtonPin, INPUT_PULLUP);
+  pinMode(rightButtonPin, INPUT_PULLUP);
+  pinMode(rotateButtonPin, INPUT_PULLUP);
+  pinMode(rapidFallButtonPin, INPUT_PULLUP);
+
+  randomSeed(analogRead(0));
+
+  startGame();
+}
+
+void loop() {
+  if (!game) gameOver();
+
+  if (!tetromino) createTetromino();
+  updateDisplay();
+
+  if (intro) {
+    delay(1000);
+    prepareScore();
+    intro = false;
+  }
+
+  actualTime = millis();
+  lastActionDelta = actualTime - lastActionTime;
+  lastMoveDelta = actualTime - lastMoveTime;
+
+  if (lastActionDelta >= 100UL) {
+    bool action{true};
+
+    if (digitalRead(leftButtonPin) == LOW) moveTetromino(-1);
+    else if (digitalRead(rightButtonPin) == LOW) moveTetromino(1);
+    else if (digitalRead(rotateButtonPin) == LOW) rotateTetromino();
+    else action = false;
+
+    if (action) {
+      lastActionTime = actualTime;
+      updateDisplay();
+    }
+  }
+
+  if (lastMoveDelta >= 250UL) {
+    moveTetrominoDown();
+    updateDisplay();
+    lastMoveTime = actualTime;
+  }
+
+  if (digitalRead(rapidFallButtonPin) == LOW) {
+    rapidTetrominoFall();
+  }
+}
